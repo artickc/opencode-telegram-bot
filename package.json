@@ -1,6 +1,6 @@
 {
   "name": "@artickc/opencode-telegram-bot",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Control OpenCode from Telegram over HTTP/SSE. Switch projects, resume and attach to live coding sessions, stream responses with diffs, queue follow-ups, and run 24/7 as a cross-platform background service.",
   "type": "module",
   "main": "src/index.ts",

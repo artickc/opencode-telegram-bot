@@ -1,125 +1,220 @@
 /**
- * /connect — manage provider connections (API keys).
+ * /connect — provider management panel.
  *
- *   /connect                 List all providers + connection status
- *   /connect <provider>      Show auth methods for a provider
- *   /connect <provider> <key>  Set API key and connect
+ *   /connect                      Providers panel (connected + available)
+ *   /connect <provider> <key>     Set API key and connect
+ *   /connect <search>             Filter available providers
  *
- * Examples:
- *   /connect anthropic sk-ant-...
- *   /connect openai sk-...
- *   /connect openrouter sk-or-...
+ * Menu "Providers" button → same panel.
+ *
+ * The panel shows:
+ *  ✓ Connected providers with ❌ disconnect buttons
+ *  ⚠ Available providers with tap-to-connect
+ *  Pagination for long provider lists
+ *  Per-provider detail: model count, auth methods
  */
 import type { Bot, Context } from "grammy";
 import { InlineKeyboard } from "grammy";
 import type { BotDeps } from "../deps.js";
 
-export async function showConnect(ctx: Context, deps: BotDeps): Promise<void> {
+const PROVIDERS_PER_PAGE = 10;
+
+/** Providers panel — reachable from menu button or /connect command. */
+export async function showProvidersPanel(ctx: Context, deps: BotDeps, search = "", page = 0, isEdit = false): Promise<void> {
   await ctx.replyWithChatAction("typing").catch(() => {});
   const client = deps.acp;
-  const parts = ctx.match ? String(ctx.match).trim().split(/\s+/) : [];
+  await client.refreshDiscovery();
 
-  // /connect <provider> <key>  → set API key
-  if (parts.length >= 2) {
-    const providerId = parts[0]!.toLowerCase();
-    const apiKey = parts.slice(1).join(" ").trim();
-    await deps.ephemeral.open(ctx);
-    await deps.ephemeral.reply(ctx, `\u{1F510} Connecting ${providerId}\u2026`);
-    const ok = await client.setProviderApiKey(providerId, apiKey);
-    if (ok) {
-      await ctx.reply(`\u2705 ${providerId} connected! Use /models to pick a model.`);
-    } else {
-      await ctx.reply(`\u274C Failed to connect ${providerId}. Check the API key and provider ID.`);
-    }
-    // Delete the message containing the API key for security
-    try {
-      await ctx.deleteMessage();
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-
-  // /connect <provider>  → show auth info
-  if (parts.length === 1) {
-    const providerId = parts[0]!.toLowerCase();
-    const authMethods = await client.getProviderAuth();
-    const methods = authMethods[providerId];
-    const connected = client.isProviderConnected(providerId);
-    const status = connected ? "\u2705 Connected" : "\u274C Not connected";
-    const lines = [
-      `\u{1F510} Provider: ${providerId}`,
-      `Status: ${status}`,
-      "",
-      methods && methods.length
-        ? `Auth methods: ${methods.map((m) => `${m.label} (${m.type})`).join(", ")}`
-        : "Auth: API key",
-      "",
-      `To connect: /connect ${providerId} <your-api-key>`,
-    ];
-    await deps.ephemeral.open(ctx);
-    await deps.ephemeral.reply(ctx, lines.join("\n"));
-    return;
-  }
-
-  // /connect  → list all providers
-  const models = client.availableModels;
   const connected = client.getConnectedProviders();
-  // Group models by provider
-  const byProvider = new Map<string, number>();
-  for (const m of models) {
-    const pid = m.modelId.split("/")[0] ?? "?";
-    byProvider.set(pid, (byProvider.get(pid) ?? 0) + 1);
+  const allProviderIds = new Set<string>();
+  const providerModelCounts = new Map<string, number>();
+  const providerNames = new Map<string, string>();
+
+  for (const m of client.availableModels) {
+    const pid = m.modelId.split("/")[0] ?? "";
+    allProviderIds.add(pid);
+    providerModelCounts.set(pid, (providerModelCounts.get(pid) ?? 0) + 1);
+    if (!providerNames.has(pid) && m.description) {
+      // Extract provider name from description (before the ✓ or (not connected))
+      const name = m.description.replace(/\s*[✓✗⚠].*/u, "").trim();
+      if (name) providerNames.set(pid, name);
+    }
   }
+
+  // Build the keyboard
+  const kb = new InlineKeyboard();
+
+  // ── Connected section ──────────────────────────────────────────────────
+  if (connected.length > 0) {
+    kb.text(`✅ Connected (${connected.length})`, "noop").row();
+    for (const pid of connected) {
+      const count = providerModelCounts.get(pid) ?? 0;
+      const name = providerNames.get(pid) ?? pid;
+      kb.text(`❌ ${name} (${count} models)`, `prov:disconnect:${pid}`).row();
+    }
+    kb.row();
+  }
+
+  // ── Available (not connected) section ──────────────────────────────────
+  const available = [...allProviderIds]
+    .filter((pid) => !connected.includes(pid))
+    .filter((pid) => {
+      if (!search) return true;
+      const q = search.toLowerCase();
+      return pid.toLowerCase().includes(q) || (providerNames.get(pid) ?? "").toLowerCase().includes(q);
+    })
+    .sort((a, b) => a.localeCompare(b));
+
+  if (available.length > 0) {
+    const totalAvail = available.length;
+    const totalPages = Math.ceil(totalAvail / PROVIDERS_PER_PAGE);
+    const startIdx = page * PROVIDERS_PER_PAGE;
+    const pageItems = available.slice(startIdx, startIdx + PROVIDERS_PER_PAGE);
+
+    kb.text(`🔌 Available (${totalAvail}${search ? ` matching "${search}"` : ""})`, "noop").row();
+
+    for (const pid of pageItems) {
+      const count = providerModelCounts.get(pid) ?? 0;
+      const name = providerNames.get(pid) ?? pid;
+      // Show provider name + model count + connect hint
+      kb.text(`🔗 ${name} (${count})`, `prov:detail:${pid}`).row();
+    }
+
+    // Pagination
+    if (totalPages > 1) {
+      const navBtns: string[] = [];
+      if (page > 0) navBtns.push(`prov:page:${page - 1}${search ? ":" + search : ""}`);
+      navBtns.push(`ℹ ${page + 1}/${totalPages}`);
+      if (page < totalPages - 1) navBtns.push(`prov:page:${page + 1}${search ? ":" + search : ""}`);
+      for (const cb of navBtns) {
+        if (cb.includes("ℹ")) {
+          kb.text(cb, "noop");
+        } else if (cb.startsWith("prov:page:0") && page === 1) {
+          kb.text("⬅ Prev", cb);
+        } else {
+          kb.text("Next ➡", cb);
+        }
+      }
+      kb.row();
+    }
+  }
+
+  if (connected.length === 0 && available.length === 0) {
+    const msg = "No providers found. Make sure OpenCode is running.\nTry: /connect anthropic <your-api-key>";
+    if (isEdit) {
+      await ctx.editMessageText(msg).catch(() => {});
+    } else {
+      await ctx.reply(msg);
+    }
+    return;
+  }
+
+  kb.text("🔄 Refresh", "prov:refresh");
 
   const lines = [
-    "\u{1F510} Providers",
+    "🔌 Providers",
     "",
-    ...[...byProvider.entries()].map(([pid, count]) => {
-      const isConnected = connected.includes(pid);
-      const icon = isConnected ? "\u2705" : "\u26A0\uFE0F";
-      return `${icon} ${pid} \u2014 ${count} models${isConnected ? "" : " (not connected)"}`;
-    }),
+    `✅ Connected: ${connected.length}`,
+    connected.length > 0 ? connected.map((p) => `  • ${providerNames.get(p) ?? p}`).join("\n") : "  (none — connect one to start)",
     "",
-    `Connected: ${connected.length} / ${byProvider.size} providers`,
+    available.length > 0 ? `🔌 Available: ${available.length}` : "",
     "",
-    "Connect with: /connect <provider> <api-key>",
-    "Example: /connect anthropic sk-ant-...",
-  ];
+    "💡 To connect: tap a provider above, or use:",
+    "/connect <provider> <api-key>",
+  ].filter(Boolean);
 
-  await deps.ephemeral.open(ctx);
-  const kb = new InlineKeyboard();
-  // Show top 8 providers as buttons
-  let i = 0;
-  for (const pid of byProvider.keys()) {
-    if (i >= 8) break;
-    const isConnected = connected.includes(pid);
-    kb.text(`${isConnected ? "\u2705" : "\u26A0\uFE0F"} ${pid}`, `connect:${pid}`);
-    if (i % 2 === 1) kb.row();
-    i++;
+  if (isEdit) {
+    await ctx.editMessageText(lines.join("\n"), { reply_markup: kb }).catch(() => {});
+  } else {
+    await ctx.reply(lines.join("\n"), { reply_markup: kb });
   }
-  await deps.ephemeral.reply(ctx, lines.join("\n"), { replyMarkup: kb });
 }
 
 export function registerConnect(bot: Bot, deps: BotDeps): void {
-  bot.command("connect", (ctx) => showConnect(ctx, deps));
-  bot.callbackQuery(/^connect:(.+)$/, async (ctx) => {
-    const providerId = ctx.match![1]!;
+  // /connect command — either set key directly or open panel
+  bot.command("connect", async (ctx) => {
+    const parts = ctx.match ? String(ctx.match).trim().split(/\s+/) : [];
+
+    // /connect <provider> <key> → set API key
+    if (parts.length >= 2) {
+      const providerId = parts[0]!.toLowerCase();
+      const apiKey = parts.slice(1).join(" ").trim();
+      await ctx.replyWithChatAction("typing").catch(() => {});
+      await ctx.reply(`🔑 Connecting ${providerId}…`);
+      const ok = await deps.acp.setProviderApiKey(providerId, apiKey);
+      if (ok) {
+        await ctx.reply(`✅ ${providerId} connected!\nUse /model to pick a model.`);
+      } else {
+        await ctx.reply(`❌ Failed to connect ${providerId}. Check the API key.`);
+      }
+      // Delete the message with the API key for security
+      try { await ctx.deleteMessage(); } catch { /* ignore */ }
+      return;
+    }
+
+    // /connect <search> or /connect → open panel
+    const search = parts.length === 1 ? parts[0]! : "";
+    await showProvidersPanel(ctx, deps, search);
+  });
+
+  // Provider detail view
+  bot.callbackQuery(/^prov:detail:(.+)$/, async (ctx) => {
+    const pid = ctx.match![1]!;
     const client = deps.acp;
-    const connected = client.isProviderConnected(providerId);
+    const isConnected = client.isProviderConnected(pid);
+    const models = client.availableModels.filter((m) => m.modelId.startsWith(pid + "/"));
     const authMethods = await client.getProviderAuth();
-    const methods = authMethods[providerId];
+    const methods = authMethods[pid];
+
     const lines = [
-      `\u{1F510} ${providerId}`,
-      `Status: ${connected ? "\u2705 Connected" : "\u274C Not connected"}`,
+      `🔌 ${pid}`,
+      `Status: ${isConnected ? "✅ Connected" : "⚠️ Not connected"}`,
+      `Models: ${models.length}`,
       "",
       methods && methods.length
         ? `Auth: ${methods.map((m) => `${m.label} (${m.type})`).join(", ")}`
         : "Auth: API key",
       "",
-      `Connect: /connect ${providerId} <api-key>`,
+      isConnected
+        ? "❌ Disconnect with the button below."
+        : `To connect:\n/connect ${pid} <your-api-key>`,
     ];
+
+    const kb = new InlineKeyboard();
+    if (isConnected) {
+      kb.text(`❌ Disconnect ${pid}`, `prov:disconnect:${pid}`).row();
+    } else {
+      kb.text("⬅ Back to providers", "prov:page:0").row();
+    }
+
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText(lines.join("\n")).catch(() => {});
+    await ctx.editMessageText(lines.join("\n"), { reply_markup: kb }).catch(() => {});
+  });
+
+  // Disconnect a provider
+  bot.callbackQuery(/^prov:disconnect:(.+)$/, async (ctx) => {
+    const pid = ctx.match![1]!;
+    const ok = await deps.acp.disconnectProvider(pid);
+    await ctx.answerCallbackQuery({ text: ok ? `✅ ${pid} disconnected` : `❌ Failed` });
+    await showProvidersPanel(ctx, deps, "", 0, true);
+  });
+
+  // Pagination
+  bot.callbackQuery(/^prov:page:(\d+)(?::(.+))?$/, async (ctx) => {
+    const page = Number(ctx.match![1]);
+    const search = ctx.match![2] ?? "";
+    await ctx.answerCallbackQuery();
+    await showProvidersPanel(ctx, deps, search, page, true);
+  });
+
+  // Refresh
+  bot.callbackQuery("prov:refresh", async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "🔄 Refreshed" });
+    await showProvidersPanel(ctx, deps, "", 0, true);
+  });
+
+  // Noop button (section headers)
+  bot.callbackQuery("noop", async (ctx) => {
+    await ctx.answerCallbackQuery();
   });
 }

@@ -12,6 +12,7 @@ import { BAR_LABELS, compactKeyboard, mainMenuInline, MENU_BTN, RUNNING_BTN, STO
 import { refreshMenu } from "../menu/refresh.js";
 import { showKillConfirm } from "./kill.js";
 import { showMcp } from "./mcp.js";
+import { showProvidersPanel } from "./connect.js";
 import { showProjects } from "./projects.js";
 import { showRunning } from "./running.js";
 import { showSessions } from "./sessions.js";
@@ -125,6 +126,10 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
     case "usage":
       await ctx.answerCallbackQuery();
       return showUsage(ctx, deps);
+    case "providers":
+    case "accounts":
+      await ctx.answerCallbackQuery();
+      return showProvidersPanel(ctx, deps);
     case "mcp":
       await ctx.answerCallbackQuery();
       return showMcp(ctx, deps);

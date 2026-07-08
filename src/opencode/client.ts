@@ -279,6 +279,23 @@ export class OpenCodeClient extends EventEmitter {
     return false;
   }
 
+  /** Disconnect a provider by removing its auth credentials. */
+  async disconnectProvider(providerId: string): Promise<boolean> {
+    if (!this.sdk) return false;
+    try {
+      // Set an empty key to clear credentials
+      const res = await this.sdk.auth.set({ path: { id: providerId }, body: { type: "api", key: "" } });
+      if (!res.error) {
+        this.connectedProviders = this.connectedProviders.filter((p) => p !== providerId);
+        await this.discoverAgents();
+        return true;
+      }
+    } catch (e) {
+      log.error("disconnect failed:", (e as Error).message);
+    }
+    return false;
+  }
+
   getConnectedProviders(): string[] { return this.connectedProviders.slice(); }
   isProviderConnected(id: string): boolean { return this.connectedProviders.includes(id); }
   async refreshDiscovery(): Promise<void> { await this.discoverAgents(); }

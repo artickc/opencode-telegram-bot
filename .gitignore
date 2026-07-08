@@ -6,5 +6,6 @@ logs/
 data/
 dist/
 *.log
+.history
 *.old
 run-service.vbs

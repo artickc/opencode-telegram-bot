@@ -66,8 +66,9 @@ export function registerMenu(bot: Bot, deps: BotDeps): void {
   });
 
   // ── Model ────────────────────────────────────────────────────────────────
-  bot.callbackQuery(/^model:set:(\d+)$/, async (ctx) => {
-    const entry = deps.acp.availableModels[Number(ctx.match![1])];
+  bot.callbackQuery(/^model:set:(.+)$/, async (ctx) => {
+    const modelId = ctx.match![1]!.replace(/_fg_/g, "/");
+    const entry = deps.acp.availableModels.find((m) => m.modelId === modelId);
     if (!entry) return void ctx.answerCallbackQuery({ text: "Expired, tap Model again." });
     const res = await deps.registry.get(ctx.chat!.id).setModelPref(entry.modelId);
     await confirm(ctx, deps, res.ok ? `\u{1F9E9} Model: ${entry.name}` : `\u26A0\uFE0F Model set failed: ${res.error}`);
@@ -182,16 +183,33 @@ async function showModelMenu(ctx: Context, deps: BotDeps): Promise<void> {
   const rt = deps.registry.get(ctx.chat!.id);
   await ensureReady(ctx, rt);
   await deps.ephemeral.open(ctx);
-  const models = deps.acp.availableModels;
+  const client = deps.acp;
+  // Refresh discovery to get latest models
+  await client.refreshDiscovery();
+  const models = client.availableModels;
   if (models.length === 0) {
-    await deps.ephemeral.reply(ctx, "No selectable models reported by OpenCode yet \u2014 send a message first, then try again.");
+    await deps.ephemeral.reply(ctx, "No models found. Use /connect <provider> <api-key> to connect a provider first.");
     return;
   }
-  const current = rt.model || deps.acp.currentModelId;
+  const current = rt.model || client.currentModelId;
+  const connected = new Set(client.getConnectedProviders());
+  // Sort: connected providers' models first
+  const sorted = [...models].sort((a, b) => {
+    const ac = connected.has(a.modelId.split("/")[0] ?? "") ? 0 : 1;
+    const bc = connected.has(b.modelId.split("/")[0] ?? "") ? 0 : 1;
+    return ac - bc || a.modelId.localeCompare(b.modelId);
+  });
   const kb = new InlineKeyboard();
-  models.forEach((m, i) => kb.text(`${m.modelId === current ? "\u2713 " : ""}${m.name}`, `model:set:${i}`).row());
+  sorted.slice(0, 30).forEach((m) => {
+    const isActive = m.modelId === current;
+    const pid = m.modelId.split("/")[0] ?? "";
+    const icon = connected.has(pid) ? "" : "\u26A0\uFE0F";
+    const cbData = `model:set:${m.modelId.replace(/\//g, "_fg_")}`;
+    kb.text(`${isActive ? "\u2713 " : ""}${icon}${m.name}`, cbData).row();
+  });
   kb.text("Default (agent's model)", "model:clear");
-  await deps.ephemeral.reply(ctx, `Current model: ${rt.model || "default"}\nChoose a model:`, { reply_markup: kb });
+  const connectedCount = [...connected].length;
+  await deps.ephemeral.reply(ctx, `Current: ${rt.model || "default"} \u00B7 ${connectedCount} providers connected\nChoose:`, { reply_markup: kb });
 }
 
 /** Ensure a session is live so models/modes are populated; show typing meanwhile. */

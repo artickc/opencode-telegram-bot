@@ -16,6 +16,8 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: "new", description: "Start a fresh session here" },
   { command: "status", description: "Current session, project & queue" },
   { command: "usage", description: "Provider & context usage" },
+  { command: "connect", description: "Connect a provider: /connect <provider> <api-key>" },
+  { command: "models", description: "Browse & select models" },
   { command: "btw", description: "Run ASAP (now if idle, else next): /btw <text>" },
   { command: "flush", description: "Send queued follow-ups now" },
   { command: "queue", description: "Show queued follow-ups" },

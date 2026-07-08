@@ -20,6 +20,7 @@ import { TaskStore } from "../tasks/store.js";
 import { createAuthMiddleware } from "./auth.js";
 import { COMMANDS } from "./commands.js";
 import { type BotDeps, MenuCache } from "./deps.js";
+import { registerConnect } from "./handlers/connect.js";
 import { registerControl } from "./handlers/control.js";
 import { registerDocuments } from "./handlers/document.js";
 import { registerHistory } from "./handlers/history.js";
@@ -159,6 +160,7 @@ export async function createBot(cfg: AppConfig, client: OpenCodeClient): Promise
   registerHistory(bot, deps);
   registerSystem(bot, deps);
   registerUsage(bot, deps);
+  registerConnect(bot, deps);
   registerKill(bot, deps);
   registerMcp(bot, deps);
   registerTasks(bot, deps);

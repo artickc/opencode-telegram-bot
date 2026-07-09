@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-07-09
+
+### Fixed
+
+- **First message showed only your prompt and no reply.** OpenCode's HTTP/SSE
+  model emits a `message.part.updated` for the *user's own* message, and the
+  client streamed it back as agent output while also double-emitting assistant
+  text (once via `message.part.delta`, once via the full `message.part.updated`
+  snapshot). The client now tracks message roles (from `message.updated`),
+  never streams user-role parts, and emits only the newly-appended suffix of
+  each part's growing snapshot — no echo, no duplication.
+- **Assistant reply could be lost or the prompt echoed on resumed sessions.**
+  On resume, `message.part.updated` can arrive before its `message.updated`
+  (role unknown). Such parts are now buffered and flushed once the role
+  resolves (assistant → emit, user → discard), with a safety flush at
+  `session.idle` so a reply is never dropped.
+- **Single-instance lock could terminate an unrelated process.** The startup
+  lock killed any stale-lock PID that merely looked like a node/tsx process —
+  which could hit a sibling bot (also `node --import tsx`) if the OS had
+  recycled the PID. It now verifies the target's command line belongs to this
+  bot before killing, and never kills when it can't confirm.
+
 ## [1.0.0] - 2026-07-08
 
 ### Changed — Full rewrite from Kiro CLI to OpenCode

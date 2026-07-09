@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
 import { isPidAlive } from "../sessions/store.js";
+import { INSTANCE_DIR, PROJECT_ROOT } from "../config.js";
 
 const log = createLogger("lock");
 
@@ -60,15 +61,18 @@ export class InstanceLock {
         log.warn(`a supervised service instance is already running (pid ${existing.pid}); not starting a duplicate`);
         return false;
       }
-      if (looksLikeNode(existing.pid)) {
-        log.warn(`another bot instance is running (pid ${existing.pid}); terminating it to take over`);
+      if (isOwnBotProcess(existing.pid)) {
+        log.warn(`another opencode-telegram-bot instance is running (pid ${existing.pid}); terminating it to take over`);
         killPid(existing.pid);
         for (let i = 0; i < 20 && isPidAlive(existing.pid); i++) await sleep(150); // up to ~3s
         if (isPidAlive(existing.pid)) log.warn(`previous instance ${existing.pid} still alive after kill; continuing anyway`);
       } else {
-        // The locked pid was recycled to an unrelated process — don't kill it,
-        // just reclaim the stale lock.
-        log.warn(`lock pid ${existing.pid} is not a node process; reclaiming stale lock`);
+        // The locked pid does NOT belong to this bot — either it was recycled to
+        // an unrelated process (e.g. a sibling kiro-telegram-bot, which is also a
+        // node/tsx process) or we can't confirm its identity. Never kill it; just
+        // reclaim the stale lock. Killing here previously risked terminating a
+        // different bot's live sessions.
+        log.warn(`lock pid ${existing.pid} is not a confirmed opencode-telegram-bot process; reclaiming stale lock without killing it`);
       }
     }
     this.write();
@@ -112,28 +116,61 @@ export class InstanceLock {
 }
 
 /**
- * Best-effort check that `pid` is a node process (our bot), to avoid killing an
- * unrelated process that happened to reuse the pid. If the platform query can't
- * run or be parsed, we assume it's ours (only this bot writes the lock) — better
- * to clear a ghost than to leave one fighting over the token.
+ * Confirm that `pid` is a *this-bot* process (opencode-telegram-bot) before we
+ * ever kill it, by matching its command line against our own entrypoint and
+ * instance directory. This prevents terminating an unrelated node/tsx process
+ * that happened to reuse the pid recorded in a stale lock — most importantly a
+ * sibling `kiro-telegram-bot`, which is also launched via `node --import tsx`
+ * and would otherwise satisfy a naive "is it node?" check. If we can't read the
+ * command line, we return `false` (don't kill — safer for coexistence).
  */
-function looksLikeNode(pid: number): boolean {
+function isOwnBotProcess(pid: number): boolean {
+  const cmd = processCommandLine(pid);
+  if (!cmd) return false;
+  const hay = cmd.toLowerCase();
+  const isNode = /node(\.exe)?\b|tsx/.test(hay);
+  if (!isNode) return false;
+  // Strong, bot-specific markers: the package/repo dir name, our entrypoint,
+  // and this instance's config dir (passed as `--instance <dir>` by services).
+  const markers = [
+    "opencode-telegram-bot",
+    "opencode-tg",
+    PROJECT_ROOT.toLowerCase(),
+    INSTANCE_DIR.toLowerCase(),
+  ];
+  return markers.some((m) => m && hay.includes(m));
+}
+
+/**
+ * Best-effort full command line for a pid, or `undefined` if it can't be read.
+ * Windows uses CIM (Win32_Process.CommandLine); Linux reads /proc; macOS uses
+ * `ps -o command=`. All calls are time-boxed and never throw.
+ */
+function processCommandLine(pid: number): string | undefined {
   try {
     if (process.platform === "win32") {
-      const out = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      // No matching task prints an INFO line, not a CSV row — treat as "gone".
-      if (!/^\s*"/.test(out)) return false;
-      return /node\.exe|tsx/i.test(out);
+      const out = execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 },
+      );
+      const line = out.trim();
+      return line || undefined;
     }
-    const out = execFileSync("ps", ["-p", String(pid), "-o", "comm="], {
+    if (process.platform === "linux") {
+      const raw = readFileSync(`/proc/${pid}/cmdline`, "utf-8");
+      const line = raw.replace(/\0/g, " ").trim();
+      return line || undefined;
+    }
+    // macOS / other unix
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
     });
-    return /node|tsx/i.test(out);
+    const line = out.trim();
+    return line || undefined;
   } catch {
-    return true;
+    return undefined;
   }
 }

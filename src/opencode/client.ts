@@ -36,6 +36,21 @@ export function isTransientOcError(err: Error): boolean {
 export function isContextExhaustedError(err: Error): boolean {
   return CONTEXT_EXHAUSTED_RE.test(err.message);
 }
+
+/** Events emitted in bulk on connect / config changes — not useful to forward. */
+const NOISY_EVENTS = new Set([
+  "server.connected",
+  "server.heartbeat",
+  "plugin.added",
+  "plugin.removed",
+  "catalog.updated",
+  "integration.updated",
+  "reference.updated",
+  "lsp.updated",
+  "mcp.tools.changed",
+  "file.watcher.updated",
+  "vcs.branch.updated",
+]);
 /** Compat alias. */
 export const isTransientAcpError = isTransientOcError;
 
@@ -74,7 +89,8 @@ export class OpenCodeClient extends EventEmitter {
   private proc?: ChildProcessWithoutNullStreams;
   private sdk?: OpencodeClient;
   private serverUrl?: string;
-  private eventLoopActive = false;
+  /** Per-directory SSE subscriptions: directory → active flag. */
+  private readonly eventStreams = new Map<string, boolean>();
   private nextId = 1;
   private readonly pending = new Map<string, PendingPrompt>();
   private readonly timeout: number;
@@ -125,11 +141,12 @@ export class OpenCodeClient extends EventEmitter {
     const args = ["serve", "--port", String(port), "--hostname", "127.0.0.1"];
     log.info(`spawning: ${this.opts.opencodePath} ${args.join(" ")}`);
 
+    const useShell = process.platform === "win32" && !this.opts.opencodePath.includes("\\") && !this.opts.opencodePath.includes("/");
     const proc = spawn(this.opts.opencodePath, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: this.opts.workspace,
       env: { ...process.env },
-      shell: process.platform === "win32",
+      shell: useShell,
     }) as ChildProcessWithoutNullStreams;
     this.proc = proc;
 
@@ -153,7 +170,7 @@ export class OpenCodeClient extends EventEmitter {
 
     this.serverUrl = `http://127.0.0.1:${port}`;
     await this.waitForServer();
-    this.sdk = createOpencodeClient({ baseUrl: this.serverUrl, directory: this.opts.workspace });
+      this.sdk = createOpencodeClient({ baseUrl: this.serverUrl });
     this.restartAttempts = 0;
     this.subagents = [];
     this.pendingStages = [];
@@ -307,18 +324,23 @@ export class OpenCodeClient extends EventEmitter {
   get pid(): number | undefined { return this.proc?.pid; }
 
   async newSession(cwd: string): Promise<string> {
-    if (!this.sdk) throw new Error("opencode serve is not running");
-    const res = await this.sdk.session.create({ query: { directory: cwd }, body: {} });
-    if (res.error || !res.data) throw new OcError("session.create failed", res.response?.status);
-    this.sessionCwds.set(res.data.id, cwd);
-    return res.data.id;
+    if (!this.serverUrl) throw new Error("opencode serve is not running");
+    const res = await fetch(`${this.serverUrl}/session?directory=${encodeURIComponent(cwd)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    if (!res.ok) throw new OcError("session.create failed", res.status);
+    const data = await res.json() as { id: string };
+    this.sessionCwds.set(data.id, cwd);
+    this.subscribeDirectory(cwd);
+    return data.id;
   }
 
   async loadSession(sessionId: string, cwd: string): Promise<void> {
-    if (!this.sdk) throw new Error("opencode serve is not running");
+    if (!this.serverUrl) throw new Error("opencode serve is not running");
     this.sessionCwds.set(sessionId, cwd);
-    const res = await this.sdk.session.get({ path: { id: sessionId }, query: { directory: cwd } });
-    if (res.error || !res.data) throw new OcError("session.load failed", res.response?.status);
+    this.subscribeDirectory(cwd);
+    const res = await fetch(`${this.serverUrl}/session/${encodeURIComponent(sessionId)}?directory=${encodeURIComponent(cwd)}`);
+    if (!res.ok) throw new OcError("session.load failed", res.status);
   }
 
   hasMode(id: string): boolean { return this.availableModes.some((m) => m.id === id); }
@@ -354,22 +376,30 @@ export class OpenCodeClient extends EventEmitter {
 
       this.pending.set(promptId, { resolve, reject, cleanup: () => clearInterval(watch), sessionId });
 
+      // Use raw HTTP like the reference bot - no SDK wrapping
       const cwd = this.sessionCwds.get(sessionId) ?? this.opts.workspace;
       const sessionModel = this.sessionModels.get(sessionId);
       const sessionAgent = this.sessionAgents.get(sessionId) ?? this.opts.agent;
-      const body = { parts, ...(sessionAgent ? { agent: sessionAgent } : {}), ...(sessionModel && sessionModel.indexOf("/") > 0 ? { model: { providerID: sessionModel.slice(0, sessionModel.indexOf("/")), modelID: sessionModel.slice(sessionModel.indexOf("/") + 1) } } : {}) };
-
-      this.sdk!.session.promptAsync({ path: { id: sessionId }, query: { directory: cwd }, body })
+      const body: Record<string, unknown> = { parts };
+      if (sessionAgent) body.agent = sessionAgent;
+      if (sessionModel && sessionModel.indexOf("/") > 0) {
+        body.model = { providerID: sessionModel.slice(0, sessionModel.indexOf("/")), modelID: sessionModel.slice(sessionModel.indexOf("/") + 1) };
+      }
+      const promptUrl = `${this.serverUrl}/session/${encodeURIComponent(sessionId)}/prompt_async?directory=${encodeURIComponent(cwd)}`;
+      fetch(promptUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
         .then((res) => {
-          if (res.error) { this.pending.delete(promptId); clearInterval(watch); reject(new OcError("prompt failed", res.response?.status)); }
+          if (!res.ok) { this.pending.delete(promptId); clearInterval(watch); reject(new OcError(`prompt_async HTTP ${res.status}`, res.status)); }
+          else log.debug(`promptAsync ok on ${sessionId.slice(0, 12)}, awaiting SSE resolution`);
         })
-        .catch((err) => { this.pending.delete(promptId); clearInterval(watch); reject(err as Error); });
+        .catch((err) => { this.pending.delete(promptId); clearInterval(watch); log.debug(`promptAsync FAILED: ${ (err as Error).message }`); reject(err as Error); });
     });
   }
 
   async cancel(sessionId: string): Promise<void> {
-    if (!this.sdk) return;
-    try { await this.sdk.session.abort({ path: { id: sessionId } }); } catch (e) { log.debug("abort failed:", (e as Error).message); }
+    if (!this.serverUrl) return;
+    try {
+      await fetch(`${this.serverUrl}/session/${encodeURIComponent(sessionId)}/abort`, { method: "POST" });
+    } catch (e) { log.debug("abort failed:", (e as Error).message); }
   }
 
   async setModel(sessionId: string, modelId: string): Promise<void> {
@@ -400,6 +430,56 @@ export class OpenCodeClient extends EventEmitter {
     const res = await this.sdk.session.list();
     if (res.error || !res.data) return [];
     return res.data as OCSession[];
+  }
+
+  /**
+   * Query the live server for ALL sessions it knows about + their status.
+   * Returns a map of sessionId → live session metadata. The bot's `opencode
+   * serve` instance shares storage with all other OpenCode processes on this
+   * machine (same `~/.local/share/opencode/` dir), so `session.list()` returns
+   * every session, not just the bot's own.
+   */
+  async getLiveSessions(): Promise<Map<string, {
+    title: string;
+    directory: string;
+    status: "idle" | "busy" | "retry";
+    updatedAt: number;
+    createdAt: number;
+  }>> {
+    if (!this.sdk) return new Map();
+    try {
+      const [listRes, statusRes] = await Promise.all([
+        this.sdk.session.list(),
+        this.sdk.session.status(),
+      ]);
+      if (listRes.error || !listRes.data) return new Map();
+
+      const statusMap = (statusRes.data ?? {}) as Record<string, SessionStatus>;
+      const sessions = listRes.data as OCSession[];
+      const result = new Map<string, {
+        title: string;
+        directory: string;
+        status: "idle" | "busy" | "retry";
+        updatedAt: number;
+        createdAt: number;
+      }>();
+
+      for (const s of sessions) {
+        const st = statusMap[s.id];
+        const statusType = st?.type ?? "idle";
+        result.set(s.id, {
+          title: s.title || s.id.slice(0, 8),
+          directory: s.directory || "",
+          status: statusType as "idle" | "busy" | "retry",
+          updatedAt: s.time?.updated ?? 0,
+          createdAt: s.time?.created ?? 0,
+        });
+      }
+      return result;
+    } catch (e) {
+      log.debug("getLiveSessions failed:", (e as Error).message);
+      return new Map();
+    }
   }
 
   // ── Stop / restart ─────────────────────────────────────────────────────────
@@ -438,7 +518,7 @@ export class OpenCodeClient extends EventEmitter {
 
   private killCurrent(): Promise<void> {
     const proc = this.proc;
-    this.proc = undefined; this.sdk = undefined; this.eventLoopActive = false;
+    this.proc = undefined; this.sdk = undefined; this.eventStreams.clear();
     this.failAllPending(new Error("opencode serve is restarting"));
     if (!proc || proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
     return new Promise<void>((resolve) => {
@@ -450,38 +530,126 @@ export class OpenCodeClient extends EventEmitter {
     });
   }
 
-  // ── SSE event loop ─────────────────────────────────────────────────────────
+  // ── SSE event loop (per-directory subscriptions) ──────────────────────────
+  //
+  // OpenCode's `/event` endpoint REQUIRES a `directory` query param to scope
+  // which workspace's events are streamed. Without it only server heartbeats
+  // arrive and prompts never resolve. We maintain one persistent SSE connection
+  // per unique session cwd, auto-reconnecting on drop.
 
   private startEventLoop(): void {
-    if (this.eventLoopActive || !this.sdk) return;
-    this.eventLoopActive = true;
-    void this.runEventLoop();
+    // Always subscribe to the default workspace so background/launch events flow.
+    void this.subscribeDirectory(this.opts.workspace);
   }
 
-  private async runEventLoop(): Promise<void> {
-    if (!this.sdk) return;
-    try {
-      const stream = await this.sdk.event.subscribe();
-      for await (const evt of stream as unknown as AsyncIterable<{ type: string; properties: unknown }>) {
-        if (!this.eventLoopActive) break;
-        this.handleEvent(evt.type, evt.properties);
-      }
-    } catch (e) {
-      if (!this.stopped) {
-        log.warn("SSE stream closed:", (e as Error).message);
-        setTimeout(() => { if (this.eventLoopActive && !this.stopped) this.runEventLoop(); }, 2000);
-      }
-    }
+  /** Ensure we have (or will have) an SSE subscription for the given directory. */
+  private subscribeDirectory(directory: string): void {
+    if (!directory || this.eventStreams.has(directory)) return;
+    this.eventStreams.set(directory, true);
+    void this.runEventLoop(directory);
   }
+
+  private async runEventLoop(directory: string): Promise<void> {
+    if (!this.serverUrl) return;
+    const tag = `[oc] SSE(${directory})`;
+    try {
+      const url = `${this.serverUrl}/event?directory=${encodeURIComponent(directory)}`;
+      log.info(`connecting ${url}`);
+      const res = await fetch(url, { headers: { Accept: "text/event-stream" } });
+      if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
+      log.info(`stream connected for ${directory}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buffer = "";
+      let evtCount = 0;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Stream was cancelled (client stopping) — stop reading.
+        if (!this.eventStreams.get(directory)) { reader.cancel(); break; }
+        buffer += dec.decode(value, { stream: true });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() ?? "";
+        for (const block of blocks) {
+          const dataLines: string[] = [];
+          for (const line of block.split("\n")) {
+            if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+          }
+          if (!dataLines.length) continue;
+          try {
+            const evt = JSON.parse(dataLines.join("\n"));
+            evtCount++;
+            if (evtCount <= 3) log.debug(`${tag} event #${evtCount}: ${evt.type}`);
+            this.handleEvent(evt.type, evt.properties);
+          } catch { /* not JSON */ }
+        }
+      }
+      log.debug(`${tag} stream ended after ${evtCount} events`);
+    } catch (e) {
+      log.debug(`${tag} error: ${(e as Error).message}`);
+    }
+    // Auto-reconnect with backoff unless we're shutting down or the directory
+    // was explicitly unsubscribed.
+    if (this.stopped || !this.eventStreams.get(directory)) return;
+    const delay = Math.min(10_000, 1000 * 2 ** Math.min(this.restartAttempts, 4));
+    setTimeout(() => {
+      if (!this.stopped && this.eventStreams.get(directory)) void this.runEventLoop(directory);
+    }, delay);
+  }
+
+  private firstEventSeen = false;
+
+  /**
+   * Per-part accumulated text we've already streamed, keyed by part id.
+   * OpenCode's `message.part.updated` carries a *growing snapshot* of the
+   * part's full text on each tick (not a raw delta), so we emit only the newly
+   * appended suffix — otherwise the streamer, which appends chunks, would
+   * duplicate the whole response on every update.
+   */
+  private readonly partText = new Map<string, string>();
+  /**
+   * messageID → role, learned from `message.updated` (which always precedes its
+   * parts). Lets us skip the user's own prompt, which OpenCode also emits as a
+   * `message.part.updated` text part — without this the bot streams your prompt
+   * back as if it were the agent's reply.
+   */
+  private readonly msgRole = new Map<string, "user" | "assistant">();
+  /** Part/message ids seen per session, so turn state is released on idle. */
+  private readonly turnParts = new Map<string, Set<string>>();
+  private readonly turnMsgs = new Map<string, Set<string>>();
+  /**
+   * Text/reasoning parts seen BEFORE their message's role was known — this
+   * happens out-of-order on RESUMED sessions. Keyed messageID → (partID →
+   * latest snapshot). Flushed as agent output when `message.updated` resolves
+   * the role to "assistant", or discarded when it resolves to "user". Without
+   * this, an out-of-order user part would be echoed, or (with a naive skip) the
+   * assistant reply would be dropped — see accomplish-ai/coworker's
+   * OpenCodeAdapter, which carries a regression test for exactly this case.
+   */
+  private readonly pendingParts = new Map<string, Map<string, { sessionId: string; reasoning: boolean; text: string }>>();
 
   private handleEvent(type: string, properties: unknown): void {
     const props = (properties ?? {}) as Record<string, unknown>;
-    if (["message.part.updated", "message.updated", "session.updated", "session.status"].includes(type)) {
+    if (!this.firstEventSeen) {
+      this.firstEventSeen = true;
+      log.info(`first SSE event received: ${type}`);
+    }
+    if (["message.part.updated", "message.part.delta", "message.updated", "session.updated", "session.status"].includes(type)) {
       this.lastActivityAny = Date.now();
     }
     switch (type) {
       case "message.part.updated": {
         this.onPartUpdated(props as { part: Part; delta?: string });
+        break;
+      }
+      case "message.part.delta": {
+        // Live streaming is driven entirely by `message.part.updated` snapshots
+        // (see onPartUpdated), which carry the full growing text. The raw delta
+        // is used only as a keep-alive signal here so the idle-timeout doesn't
+        // fire mid-stream — emitting it would double the rendered response.
+        const sid = props.sessionID as string | undefined;
+        if (sid) this.lastActivity.set(sid, Date.now());
         break;
       }
       case "session.idle": {
@@ -525,12 +693,25 @@ export class OpenCodeClient extends EventEmitter {
         if (info?.id) {
           this.subagents = this.subagents.filter((s) => s.sessionId !== info.id);
           this.sessionCwds.delete(info.id); this.sessionModels.delete(info.id); this.sessionAgents.delete(info.id);
+          this.clearTurnState(info.id);
         }
         this.emit("notification", "session.deleted", props);
         break;
       }
       case "message.updated": {
         const msgInfo = (props as { info: Record<string, unknown> }).info;
+        if (msgInfo?.id && (msgInfo.role === "user" || msgInfo.role === "assistant")) {
+          const mid = msgInfo.id as string;
+          const mrole = msgInfo.role as "user" | "assistant";
+          this.msgRole.set(mid, mrole);
+          if (msgInfo.sessionID) {
+            const sid = msgInfo.sessionID as string;
+            const set = this.turnMsgs.get(sid) ?? new Set<string>();
+            set.add(mid);
+            this.turnMsgs.set(sid, set);
+          }
+          this.flushPending(mid, mrole);
+        }
         if (msgInfo?.sessionID && msgInfo.cost !== undefined) {
           const sid = msgInfo.sessionID as string;
           const prev = this.metadata.get(sid);
@@ -544,9 +725,13 @@ export class OpenCodeClient extends EventEmitter {
         if (sid) { const prev = this.metadata.get(sid); this.metadata.set(sid, { ...prev, effort: "compacted" }); }
         break;
       }
-      default:
+      default: {
+        // Ignore high-volume housekeeping events that would otherwise spam
+        // the notification channel.
+        if (NOISY_EVENTS.has(type)) break;
         this.emit("notification", type, props);
         break;
+      }
     }
   }
 
@@ -556,14 +741,28 @@ export class OpenCodeClient extends EventEmitter {
     const sessionId = part.sessionID;
     this.lastActivity.set(sessionId, Date.now());
 
-    if (part.type === "text") {
-      const text = data.delta ?? (part as TextPart).text;
-      if (text) this.emit("session-update", sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
-      return;
-    }
-    if (part.type === "reasoning") {
-      const text = data.delta ?? (part as { text: string }).text;
-      if (text) this.emit("session-update", sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text } });
+    // OpenCode emits a `message.part.updated` for the *user's* message too, so
+    // we must not stream it back as agent output. Normally `message.updated`
+    // (which sets the role) precedes a message's parts; but on RESUMED sessions
+    // parts can arrive first, so the role may be unknown here:
+    //   • role "user"      → skip (the prompt echo),
+    //   • role "assistant" → stream now,
+    //   • role unknown     → buffer until message.updated resolves the role.
+    const messageID = (part as { messageID?: string }).messageID;
+    const role = messageID ? this.msgRole.get(messageID) : undefined;
+    if (role === "user") return;
+
+    if (part.type === "text" || part.type === "reasoning") {
+      if ((part as TextPart).ignored) return;
+      const full = (part as TextPart | { text?: string }).text ?? "";
+      const reasoning = part.type === "reasoning";
+      if (role === undefined && messageID) {
+        let m = this.pendingParts.get(messageID);
+        if (!m) { m = new Map(); this.pendingParts.set(messageID, m); }
+        m.set(part.id, { sessionId, reasoning, text: full });
+        return;
+      }
+      this.emitTextGrowth(sessionId, part.id, full, reasoning);
       return;
     }
     if (part.type === "tool") {
@@ -584,6 +783,63 @@ export class OpenCodeClient extends EventEmitter {
       }
       this.emit("session-update", sessionId, update);
       return;
+    }
+  }
+
+  /**
+   * Given the full growing snapshot of a text/reasoning part, return only the
+   * newly-appended suffix (what hasn't been streamed yet) and remember it.
+   * Handles the rare wholesale-replacement case by re-emitting from scratch.
+   */
+  private textGrowth(sessionId: string, partId: string, full: string): string {
+    const prev = this.partText.get(partId) ?? "";
+    if (full === prev) return "";
+    const chunk = full.startsWith(prev) ? full.slice(prev.length) : full;
+    this.partText.set(partId, full);
+    const set = this.turnParts.get(sessionId) ?? new Set<string>();
+    set.add(partId);
+    this.turnParts.set(sessionId, set);
+    return chunk;
+  }
+
+  /** Emit the newly-appended text of a part as an agent message/thought chunk. */
+  private emitTextGrowth(sessionId: string, partId: string, full: string, reasoning: boolean): void {
+    const chunk = this.textGrowth(sessionId, partId, full);
+    if (!chunk) return;
+    const kind = reasoning ? "agent_thought_chunk" : "agent_message_chunk";
+    this.emit("session-update", sessionId, { sessionUpdate: kind, content: { type: "text", text: chunk } });
+  }
+
+  /** Once a message's role is known, flush (assistant) or discard (user) any
+   *  parts that arrived before it. Insertion order preserves arrival order. */
+  private flushPending(messageID: string, role: "user" | "assistant"): void {
+    const m = this.pendingParts.get(messageID);
+    if (!m) return;
+    this.pendingParts.delete(messageID);
+    if (role !== "assistant") return; // user parts: never echo
+    for (const [partId, p] of m) this.emitTextGrowth(p.sessionId, partId, p.text, p.reasoning);
+  }
+
+  /** At turn end, flush any still-unresolved parts for the session as assistant
+   *  output. By idle the user message's role is long known, so leftovers are
+   *  assistant content whose `message.updated` was missed — flush, never drop. */
+  private flushPendingForSession(sessionId: string): void {
+    for (const [messageID, m] of this.pendingParts) {
+      const relevant = [...m.entries()].filter(([, p]) => p.sessionId === sessionId);
+      if (relevant.length === 0) continue;
+      for (const [partId, p] of relevant) this.emitTextGrowth(p.sessionId, partId, p.text, p.reasoning);
+      this.pendingParts.delete(messageID);
+    }
+  }
+
+  /** Release per-turn streaming state for a session (part/message tracking). */
+  private clearTurnState(sessionId: string): void {
+    const parts = this.turnParts.get(sessionId);
+    if (parts) { for (const pid of parts) this.partText.delete(pid); this.turnParts.delete(sessionId); }
+    const msgs = this.turnMsgs.get(sessionId);
+    if (msgs) { for (const mid of msgs) this.msgRole.delete(mid); this.turnMsgs.delete(sessionId); }
+    for (const [messageID, m] of this.pendingParts) {
+      for (const p of m.values()) { if (p.sessionId === sessionId) { this.pendingParts.delete(messageID); break; } }
     }
   }
 
@@ -632,10 +888,13 @@ export class OpenCodeClient extends EventEmitter {
   // ── Prompt resolution ──────────────────────────────────────────────────────
 
   private resolvePrompt(sessionId: string, result: PromptResult): void {
-    for (const [id, p] of this.pending) { if (p.sessionId === sessionId) { p.cleanup(); this.pending.delete(id); p.resolve(result); } }
+    this.flushPendingForSession(sessionId);
+    for (const [id, p] of this.pending) { if (p.sessionId === sessionId) { p.cleanup(); this.pending.delete(id); log.debug(`prompt ${id} resolved: ${result.stopReason}`); p.resolve(result); } }
+    this.clearTurnState(sessionId);
   }
   private rejectPrompt(sessionId: string, err: Error): void {
     for (const [id, p] of this.pending) { if (p.sessionId === sessionId) { p.cleanup(); this.pending.delete(id); p.reject(err); } }
+    this.clearTurnState(sessionId);
   }
   private failAllPending(err: Error): void {
     for (const [, p] of this.pending) { p.cleanup(); p.reject(err); }

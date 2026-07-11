@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Extract version from tag
+        id: ver
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build clean source zip
+        run: |
+          git archive --format=zip --prefix=opencode-telegram-bot-${{ steps.ver.outputs.VERSION }}/ \
+            -o opencode-telegram-bot-${{ steps.ver.outputs.VERSION }}.zip HEAD
+
+      - name: Extract CHANGELOG section
+        id: changelog
+        run: |
+          VERSION="${{ steps.ver.outputs.VERSION }}"
+          # Extract the section between "## [VERSION]" and the next "## [" or end
+          awk -v ver="## \[${VERSION}\]" '
+            $0 ~ "^"ver { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          # If empty, use auto-generated notes
+          if [ ! -s release_notes.md ]; then
+            echo "Release ${VERSION}" > release_notes.md
+          fi
+
+      - name: Append install footer
+        run: |
+          cat >> release_notes.md <<'EOF'
+
+          ---
+
+          ## Install
+
+          ```bash
+          npm install -g @artickc/opencode-telegram-bot
+          opencode-tg setup    # configure .env + detect opencode CLI
+          opencode-tg install  # install as 24/7 background service
+          ```
+
+          Or see the [Install Guide](docs/INSTALL.md).
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ steps.ver.outputs.VERSION }}
+          body_path: release_notes.md
+          files: opencode-telegram-bot-${{ steps.ver.outputs.VERSION }}.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false

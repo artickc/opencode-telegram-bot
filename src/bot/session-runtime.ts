@@ -16,6 +16,7 @@ import { createLogger } from "../logger.js";
 import { buildTranscript } from "../sessions/history.js";
 import { sessionHashtags } from "../render/hashtags.js";
 import { PROGRESS_DIRECTIVE } from "../render/progress.js";
+import { SHELL_DIRECTIVE } from "../render/shell-directive.js";
 import { buildPriming, recentTranscript } from "./session-fork.js";
 import { TailWatcher } from "../sessions/tail.js";
 import type { HistoryEntry } from "../sessions/types.js";
@@ -318,11 +319,18 @@ export class SessionRuntime {
   async setModelPref(modelId: string): Promise<{ ok: boolean; error?: string }> {
     // Persist the choice always; only talk to OpenCode when a session is live in
     // the current process (set_model on an unloaded session crashes the agent).
-    this.settings.update(this.chatId, { model: modelId });
-    if (modelId && this.sessionLive && this.sessionId) {
-      if (!this.acp.hasModel(modelId)) return { ok: false, error: `unknown model: ${modelId}` };
+    // Expand aliases so settings never store a bare "think" that ACP rejects.
+    const resolved =
+      !modelId || modelId === "auto"
+        ? modelId
+        : (this.acp.resolveModelId(modelId) ?? (modelId.includes("/") ? modelId : undefined));
+    if (modelId && modelId !== "auto" && !resolved) {
+      return { ok: false, error: `unknown model: ${modelId}` };
+    }
+    this.settings.update(this.chatId, { model: resolved || "" });
+    if (resolved && resolved !== "auto" && this.sessionLive && this.sessionId) {
       try {
-        await this.acp.setModel(this.sessionId, modelId);
+        await this.acp.setModel(this.sessionId, resolved);
       } catch (e) {
         this.changed();
         return { ok: false, error: (e as Error).message };
@@ -351,28 +359,50 @@ export class SessionRuntime {
 
   private async applySessionPrefs(): Promise<void> {
     const s = this.settings.get(this.chatId);
-    // Drop any persisted model the agent doesn't actually offer (an unknown id
-    // is silently accepted by set_model but then breaks the next prompt).
-    if (s.model && !this.acp.hasModel(s.model)) {
+    // Expand short aliases ("think") → full provider/model ids. hasModel() used
+    // to match suffixes so "think" looked valid, but ACP rejects bare aliases
+    // and a failed set left the session producing empty end_turn replies.
+    if (s.model && !s.model.includes("/")) {
+      const full = this.acp.resolveModelId(s.model);
+      if (full && full !== s.model) {
+        log.info(`expanding model alias "${s.model}" → "${full}" for chat ${this.chatId}`);
+        this.settings.update(this.chatId, { model: full });
+      } else if (!full) {
+        log.warn(`clearing invalid persisted model "${s.model}" for chat ${this.chatId}`);
+        this.settings.update(this.chatId, { model: "" });
+      }
+    } else if (s.model && !this.acp.hasModel(s.model)) {
       log.warn(`clearing invalid persisted model "${s.model}" for chat ${this.chatId}`);
       this.settings.update(this.chatId, { model: "" });
     }
     const cur = this.settings.get(this.chatId);
-    // Adopt the session's current agent (mode) when the user hasn't chosen one.
+    // Adopt the session's current agent when the user hasn't chosen one.
     if (!cur.agent && this.acp.currentModeId) {
       this.settings.update(this.chatId, { agent: this.acp.currentModeId });
-    } else if (this.sessionId && cur.agent && this.acp.hasMode(cur.agent) && cur.agent !== this.acp.currentModeId) {
+    } else if (
+      this.sessionId &&
+      cur.agent &&
+      // Only agents OpenCode advertised — never phantom OPENCODE_AGENT / settings ids.
+      this.acp.availableModes.some((m) => m.id === cur.agent) &&
+      cur.agent !== this.acp.currentModeId
+    ) {
       try {
         await this.acp.setMode(this.sessionId, cur.agent);
       } catch (e) {
-        log.debug(`apply agent failed: ${(e as Error).message}`);
+        log.warn(`apply agent "${cur.agent}" failed: ${(e as Error).message}`);
       }
+    } else if (cur.agent && this.acp.availableModes.length > 0 && !this.acp.availableModes.some((m) => m.id === cur.agent)) {
+      log.warn(`clearing unknown agent "${cur.agent}" for chat ${this.chatId}`);
+      this.settings.update(this.chatId, { agent: this.acp.currentModeId || "" });
     }
-    if (this.sessionId && cur.model && this.acp.hasModel(cur.model)) {
-      try {
-        await this.acp.setModel(this.sessionId, cur.model);
-      } catch (e) {
-        log.debug(`apply model failed: ${(e as Error).message}`);
+    if (this.sessionId && cur.model) {
+      const modelId = this.acp.resolveModelId(cur.model);
+      if (modelId && modelId !== "auto") {
+        try {
+          await this.acp.setModel(this.sessionId, modelId);
+        } catch (e) {
+          log.warn(`apply model "${modelId}" failed: ${(e as Error).message}`);
+        }
       }
     }
   }
@@ -498,6 +528,7 @@ export class SessionRuntime {
     const content = buildContentBlocks(input, {
       reasoning: reasoningDirective(this.reasoning),
       priming: this.primingContext,
+      shell: SHELL_DIRECTIVE,
       progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
     this.primingContext = undefined;
@@ -654,6 +685,7 @@ export class SessionRuntime {
     const forkContent = buildContentBlocks(input, {
       reasoning: reasoningDirective(this.reasoning),
       priming: transcript ? buildPriming(transcript) : undefined,
+      shell: SHELL_DIRECTIVE,
       progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
     return this.runPromptWithRetries(forkContent);
@@ -755,6 +787,7 @@ export class SessionRuntime {
     const delays = this.cfg.promptRetryAttempts > 0 ? backoffSchedule(this.cfg.promptRetryAttempts) : [RETRY_BASE_MS];
     const resumeContent = buildContentBlocks(textPrompt(RESUME_INSTRUCTION), {
       reasoning: reasoningDirective(this.reasoning),
+      shell: SHELL_DIRECTIVE,
       progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
 
@@ -909,13 +942,16 @@ export class SessionRuntime {
     if (kind === "tool_call" || kind === "tool_call_update") {
       if (!this.cfg.showToolCalls) return;
       const id = update.toolCallId || `${kind}:${update.title ?? ""}`;
-      if (this.shownToolIds.has(id)) return;
-      this.shownToolIds.add(id);
       const md = formatToolCall(update, {
         showDiffs: this.cfg.showEditDiffs,
         diffMaxLines: this.cfg.diffMaxLines,
       });
-      if (md) this.streamer.addTool(md);
+      if (!md) return;
+      // OpenCode ACP streams the same toolCallId many times (pending →
+      // in_progress → completed). Replace the card in place so Telegram doesn't
+      // freeze on ⏳ after the turn already finished.
+      this.streamer.upsertTool(id, md);
+      this.shownToolIds.add(id);
     }
   }
 

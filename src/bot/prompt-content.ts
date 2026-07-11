@@ -9,6 +9,8 @@ import type { PromptInput } from "../app/types.js";
 export interface ContentOptions {
   reasoning?: string;
   priming?: string;
+  /** Never block turns on long-lived shell processes (nohup / Start-Process). */
+  shell?: string;
   /** Appended at the very bottom so the agent emits a `{progress: N%}` marker. */
   progress?: string;
 }
@@ -34,6 +36,10 @@ export function buildContentBlocks(input: PromptInput, opts: ContentOptions = {}
   }
   if (opts.reasoning) {
     text = `(${opts.reasoning})\n\n${text}`;
+  }
+  // Shell rule before progress so the progress marker stays the final instruction block.
+  if (opts.shell) {
+    text = `${text}\n\n${opts.shell}`;
   }
   if (opts.progress) {
     text = `${text}\n\n${opts.progress}`;

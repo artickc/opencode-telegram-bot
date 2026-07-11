@@ -10,9 +10,8 @@ import type { HistoryEntry } from "../../sessions/types.js";
 import { jsonlMtimeMs, readFirstPrompt } from "../../sessions/history.js";
 import { progressBar } from "../../render/progress.js";
 import { refreshMenu } from "../menu/refresh.js";
+import { SESSION_ID } from "../session-id.js";
 import { sendMarkdownDoc } from "../telegram-io.js";
-
-const UUID = "([0-9a-fA-F-]{36})";
 const ROLE_ICON: Record<string, string> = {
   user: "\u{1F464}",
   assistant: "\u{1F916}",
@@ -132,17 +131,20 @@ export function registerRunning(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery("run:noop", (ctx) => ctx.answerCallbackQuery({ text: "Already in foreground" }));
 
-  bot.callbackQuery(new RegExp(`^run:switch:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^run:switch:${SESSION_ID}$`), async (ctx) => {
     await ctx.answerCallbackQuery();
     await deps.ephemeral.clear(ctx.chat!.id); // remove the /running cards; 🔀 Switched stays
     await switchAndShow(ctx, deps, ctx.match![1]!);
   });
 
-  bot.callbackQuery(new RegExp(`^run:close:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^run:close:${SESSION_ID}$`), async (ctx) => {
     const id = ctx.match![1]!;
-    await deps.registry.controller(ctx.chat!.id).close(id);
-    await ctx.answerCallbackQuery({ text: "Closed" });
+    const chatId = ctx.chat!.id;
+    const ok = await deps.registry.controller(chatId).close(id);
+    await ctx.answerCallbackQuery({ text: ok ? "Closed" : "Already closed" });
     await ctx.deleteMessage().catch(() => {}); // remove just this card
+    // Status panel must reflect the new foreground (or empty) session.
+    deps.statusPanel.refresh(chatId);
   });
 }
 

@@ -33,6 +33,7 @@ async function main(): Promise<void> {
   log.info("starting OpenCode Telegram Bot");
   log.info(`workspace: ${cfg.workspace}`);
   log.info(`opencode:  ${cfg.opencodePath}`);
+  log.info(`transport: ACP (opencode acp / stdio JSON-RPC)`);
   log.info(`log file:  ${cfg.logFile}`);
 
   const client = new OpenCodeClient({

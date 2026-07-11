@@ -39,7 +39,13 @@ function mainPanel(list: McpServer[]): { text: string; kb: InlineKeyboard } {
   const disabled = list.filter((s) => s.disabled);
   const lines = [`\u{1F9E9} MCP servers \u2014 ${list.length} total \u00B7 \u2705 ${enabled.length} enabled \u00B7 \u26D4 ${disabled.length} disabled`, ""];
   if (list.length === 0) {
-    lines.push("No MCP servers configured in ~/.config/opencode/opencode.json.");
+    lines.push(
+      "No MCP servers found under the `mcp` key in:",
+      "  ~/.config/opencode/opencode.json(.jsonc)",
+      "  ~/.opencode/opencode.json(.jsonc)",
+      "  <project>/opencode.json(.jsonc)",
+      "JSONC (comments / trailing commas) is supported.",
+    );
   } else {
     const LIST_CAP = 60; // keep the message well under Telegram's 4096-char limit
     for (const s of list.slice(0, LIST_CAP)) {

@@ -1,7 +1,7 @@
 {
   "name": "@artickc/opencode-telegram-bot",
-  "version": "1.0.5",
-  "description": "Control OpenCode from Telegram over HTTP/SSE. Switch projects, resume and attach to live coding sessions, stream responses with diffs, queue follow-ups, and run 24/7 as a cross-platform background service.",
+  "version": "2.0.0",
+  "description": "Control OpenCode from Telegram over ACP (JSON-RPC/stdio). Switch projects, resume and attach to live coding sessions, stream responses with diffs, queue follow-ups, and run 24/7 as a cross-platform background service.",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
@@ -58,7 +58,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@opencode-ai/sdk": "^1.17.0",
     "diff": "^7.0.0",
     "dotenv": "^16.4.7",
     "grammy": "^1.30.0",

@@ -2,7 +2,7 @@
  * Per-session kill — terminate the OS process holding a live session's `.lock`
  * straight from its card in /sessions or /active.
  *
- * Flow (callback data, UUID-keyed so it survives bot restarts):
+ * Flow (callback data, session-id-keyed so it survives bot restarts):
  *   killsess:<id>          a tap on the card's 🛑 Kill button → ask to confirm
  *   killsess:do:<id>       confirmed → kill the lockPid, report the outcome
  *   killsess:cancel:<id>   abort → restore the card's normal buttons
@@ -15,9 +15,8 @@ import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { killPid } from "../../sessions/process.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import type { BotDeps } from "../deps.js";
+import { SESSION_ID } from "../session-id.js";
 import { buildSessionCard } from "./session-card.js";
-
-const UUID = "([0-9a-fA-F-]{36})";
 
 /** Rebuild the standard card keyboard for the freshest on-disk session state. */
 function cardKeyboard(deps: BotDeps, meta: SessionMeta): InlineKeyboard {
@@ -43,7 +42,7 @@ function killable(
 
 export function registerSessionKill(bot: Bot, deps: BotDeps): void {
   // Step 1 — ask to confirm. Swap the card's buttons for a Kill/Cancel row.
-  bot.callbackQuery(new RegExp(`^killsess:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^killsess:${SESSION_ID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     const check = killable(deps, id);
     if (!check.ok) {
@@ -60,7 +59,7 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
   });
 
   // Step 2a — confirmed. Re-validate (it may have died meanwhile), then kill.
-  bot.callbackQuery(new RegExp(`^killsess:do:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^killsess:do:${SESSION_ID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     const check = killable(deps, id);
     if (!check.ok) {
@@ -78,7 +77,7 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
   });
 
   // Step 2b — cancelled. Put the card's normal buttons back.
-  bot.callbackQuery(new RegExp(`^killsess:cancel:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^killsess:cancel:${SESSION_ID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     await ctx.answerCallbackQuery({ text: "Cancelled" });
     const meta = deps.store.get(id);

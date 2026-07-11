@@ -3,8 +3,8 @@
  * (no MarkdownV2 so Windows paths and titles never need escaping) plus an
  * inline keyboard with Connect / History / Watch actions.
  *
- * Callback data is unchanged (`sess:` / `hist:` / `watch:` + UUID) so the
- * existing handlers in sessions.ts keep working.
+ * Callback data is `sess:` / `hist:` / `watch:` + OpenCode session id
+ * (`ses_…`) so the handlers in sessions.ts keep working.
  */
 import { InlineKeyboard } from "grammy";
 import { basename } from "node:path";

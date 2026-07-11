@@ -1,4 +1,4 @@
-# Release checklist
+﻿# Release checklist
 
 A release ships a **batch of merged pull requests** as one versioned tag. The
 heavy lifting (zip + notes + publish) is automated by
@@ -13,7 +13,8 @@ heavy lifting (zip + notes + publish) is automated by
 
 ## 2. Changelog & version
 
-- [ ] Add a new `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`.
+- [ ] Add a new `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` with the
+      user-facing features/fixes (this becomes the GitHub Release notes).
 - [ ] Add the matching link reference at the bottom of `CHANGELOG.md`.
 - [ ] Choose the bump per SemVer: `patch` (fixes), `minor` (features),
       `major` (breaking).
@@ -25,7 +26,7 @@ npm version minor          # bumps package.json, commits, creates the v* tag
 git push --follow-tags     # pushing the tag triggers the Release workflow
 ```
 
-- [ ] Watch the **Release** workflow finish green.
+- [ ] Watch the **Release** workflow in the Actions tab finish green.
 - [ ] Confirm the GitHub Release exists with:
   - [ ] the correct title (`vX.Y.Z`),
   - [ ] notes matching the CHANGELOG section,

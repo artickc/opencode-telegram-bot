@@ -4,6 +4,7 @@
  */
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { extractProgress, PROGRESS_DIRECTIVE } from "../render/progress.js";
+import { SHELL_DIRECTIVE } from "../render/shell-directive.js";
 import type { HistoryEntry, HistoryRole } from "./types.js";
 
 const TAIL_WINDOWS = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024]; // grow until entries found
@@ -154,13 +155,14 @@ function toEntry(ev: RawEvent): HistoryEntry | undefined {
   };
 }
 
-/** Strip the `{progress: N%}` markers (any role) and the appended progress
- *  directive (user prompts) from persisted text so history / unread / previews
- *  / fork-priming never surface the raw plumbing. */
+/** Strip the `{progress: N%}` markers (any role) and the appended progress /
+ *  shell directives (user prompts) from persisted text so history / unread /
+ *  previews / fork-priming never surface the raw plumbing. */
 function cleanStoredText(text: string): string {
   if (!text) return text;
   let t = extractProgress(text).cleaned;
   if (t.includes(PROGRESS_DIRECTIVE)) t = t.split(PROGRESS_DIRECTIVE).join("").trim();
+  if (t.includes(SHELL_DIRECTIVE)) t = t.split(SHELL_DIRECTIVE).join("").trim();
   return t;
 }
 

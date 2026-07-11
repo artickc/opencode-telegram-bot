@@ -183,6 +183,8 @@ export class ChatController {
       if (this.fg) await this.fg.setForeground(true);
     }
     this.persist();
+    // Panel / keyboards re-render against the new foreground (or empty) set.
+    this.refresh(this.chatId);
     return true;
   }
 

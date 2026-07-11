@@ -1,9 +1,9 @@
 /**
  * Types for MCP (Model Context Protocol) server inspection & control.
  *
- * OpenCode loads MCP servers from its JSON config files: a global one at
- * `~/.config/opencode/opencode.json` and an optional per-workspace
- * `<cwd>/opencode.json`. MCP servers are under the `"mcp"` key with
+ * OpenCode loads MCP servers from JSON/JSONC config files (global + workspace).
+ * Candidates: `~/.config/opencode/opencode.json(.jsonc)`, `~/.opencode/…`,
+ * and `<cwd>/opencode.json(.jsonc)`. Servers live under the `"mcp"` key with
  * `"type": "local"|"remote"`, `"command"` (array), `"url"` (remote),
  * `"enabled"` (default true), and `"environment"`.
  */

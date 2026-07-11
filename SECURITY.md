@@ -1,10 +1,10 @@
-# Security Policy
+﻿# Security Policy
 
 ## The security model — read this first
 
 This bot connects Telegram to **OpenCode running on your machine**. Anyone who
-can message the bot can make OpenCode **read/write files and run shell commands**
-on the host with your user's permissions. Treat the bot token and host access as
+can message the bot can make OpenCode **read/write files and run shell commands** on
+the host with your user's permissions. Treat the bot token and host access as
 highly sensitive.
 
 ### Required hardening
@@ -16,17 +16,17 @@ highly sensitive.
 3. **Understand `OPENCODE_TRUST_ALL_TOOLS=true`.** This runs tools without
    confirmation. Set it to `false` if you want OpenCode to surface permission
    prompts; the bot then auto-declines unknown permission requests.
-4. **Scope the workspace.** Only point `PROJECT_ROOTS` at directories you are
-   comfortable exposing.
+4. **Scope the workspace.** The bot operates in the project folders you select.
+   Only point `PROJECT_ROOTS` at directories you are comfortable exposing.
 5. **Run as a non-privileged user.** The provided services install as a *user*
-   service — never as root/SYSTEM/admin.
+   service (systemd `--user`, launchd LaunchAgent, Windows logon task) — never
+   as root/SYSTEM/admin.
 
 ### What the bot does NOT do
 
 - It does not transmit your code or secrets anywhere except to Telegram (your
   messages) and to OpenCode (which talks to its own backend).
-- It does not open any inbound network port (except the internal `opencode serve`
-  on 127.0.0.1).
+- It does not open any inbound network port.
 - It does not commit, read, or log the contents of `.env` secrets.
 
 ## Reporting a vulnerability

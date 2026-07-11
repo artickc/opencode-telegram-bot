@@ -6,13 +6,15 @@ update this file in the same pull request.
 
 ## What this project is
 
-A TypeScript bridge that controls **OpenCode** from **Telegram** over the
-**OpenCode HTTP/SSE API**. One `opencode serve` process manages many
-sessions; the bot streams responses, renders MarkdownV2 + diffs, queues
-follow-ups, runs scheduled tasks, and can run 24/7 as a background service.
+A TypeScript bridge that controls **OpenCode** from **Telegram** via the
+**Agent Client Protocol (ACP)** — `opencode acp` over JSON-RPC/stdio. One
+ACP process manages many sessions; the bot streams responses, renders
+MarkdownV2 + diffs, queues follow-ups, runs scheduled tasks, and can run
+24/7 as a background service.
 
 - **Runtime:** Node.js ≥ 20, TypeScript run directly via `tsx` (no build step).
-- **Key deps:** `grammy` (Telegram), `@opencode-ai/sdk` (OpenCode), `dotenv`, `diff`.
+- **Key deps:** `grammy` (Telegram), `dotenv`, `diff`.
+- **Transport:** `opencode acp` (stdio ACP / JSON-RPC 2.0) — not HTTP/SSE.
 - **Entry point:** `src/index.ts` · **CLI/daemon:** `src/cli.ts`.
 
 ## Project layout

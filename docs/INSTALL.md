@@ -1,4 +1,4 @@
-# 📦 Install guide
+﻿# 📦 Install guide
 
 Get the OpenCode Telegram Bot running in a few minutes.
 
@@ -18,14 +18,14 @@ Get the OpenCode Telegram Bot running in a few minutes.
 ## Option A — npm (recommended)
 
 ```bash
-npm install -g opencode-telegram-bot
+npm install -g @artickc/opencode-telegram-bot
 ```
 
 This gives you the **`opencode-tg`** command. It ships with the `tsx` runtime,
 so there's no build step.
 
 ```bash
-opencode-tg setup                   # auto-detects opencode, writes ./.env
+opencode-tg setup                   # auto-detects opencode, writes .env
 # edit .env: set TELEGRAM_BOT_TOKEN and ALLOWED_USERS
 opencode-tg run                     # run in the foreground
 ```
@@ -43,7 +43,7 @@ opencode-tg run                     # run in the foreground
 | `opencode-tg uninstall` | Stop + remove the service. |
 | `opencode-tg help` | Show all commands. |
 
-Update later with `npm install -g opencode-telegram-bot@latest`.
+Update later with `npm install -g @artickc/opencode-telegram-bot@latest`.
 
 ---
 

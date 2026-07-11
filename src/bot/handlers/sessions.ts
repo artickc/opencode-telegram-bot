@@ -13,12 +13,12 @@ import type { BotDeps } from "../deps.js";
 import { readHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import { refreshMenu } from "../menu/refresh.js";
+import { SESSION_ID } from "../session-id.js";
 import { showHistory } from "./history.js";
 import { buildSessionCard } from "./session-card.js";
 
 /** How many session cards per page. */
 const PAGE_SIZE = 10;
-const UUID = "([0-9a-fA-F-]{36})";
 
 export async function showSessions(ctx: Context, deps: BotDeps, query?: string): Promise<void> {
   const q = (query ?? "").trim().toLowerCase();
@@ -90,7 +90,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     await ctx.reply(rt.stopWatch() ? "\u{1F6D1} Stopped watching." : "Not watching anything.");
   });
 
-  bot.callbackQuery(new RegExp(`^sess:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^sess:${SESSION_ID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     const meta = deps.store.get(id);
     if (!meta) {
@@ -115,14 +115,14 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     }
   });
 
-  bot.callbackQuery(new RegExp(`^hist:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^hist:${SESSION_ID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     await ctx.answerCallbackQuery();
     const meta = deps.store.get(id);
     await showHistory(deps, ctx.chat!.id, id, meta);
   });
 
-  bot.callbackQuery(new RegExp(`^watch:${UUID}$`), async (ctx) => {
+  bot.callbackQuery(new RegExp(`^watch:${SESSION_ID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     await ctx.answerCallbackQuery();
     const meta = deps.store.get(id);

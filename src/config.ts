@@ -184,7 +184,8 @@ export function loadConfig(): AppConfig {
     messageBatchMs: nonNegNum(process.env.MESSAGE_BATCH_MS, 800),
     showToolCalls: bool(process.env.SHOW_TOOL_CALLS, true),
     showEditDiffs: bool(process.env.SHOW_EDIT_DIFFS, true),
-    diffMaxLines: num(process.env.DIFF_MAX_LINES, 120),
+    // Keep diffs compact in Telegram; long edits are head+tail truncated.
+    diffMaxLines: num(process.env.DIFF_MAX_LINES, 48),
     sendAgentImages: bool(process.env.SEND_AGENT_IMAGES, true),
     agentImagesMax: num(process.env.AGENT_IMAGES_MAX, 8),
     docMaxChars: nonNegNum(process.env.DOC_MAX_CHARS, 100_000),
@@ -226,8 +227,11 @@ function resolveOpencodePath(explicit?: string): string {
   if (explicit) return expandHome(explicit);
 
   const candidates = [
+    // Prefer the real Windows binary (npm shims often break under spawn).
+    join(homedir(), "AppData", "Roaming", "npm", "node_modules", "opencode-ai", "bin", "opencode.exe"),
     join(homedir(), "AppData", "Roaming", "npm", "opencode.cmd"),
     join(homedir(), "AppData", "Roaming", "npm", "opencode"),
+    join(homedir(), ".bun", "bin", "opencode.exe"),
     "/usr/local/bin/opencode",
     "/usr/bin/opencode",
   ];

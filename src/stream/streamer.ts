@@ -18,12 +18,17 @@ import { estimateProgress } from "../render/progress-estimate.js";
 import { safeEdit, safeSend } from "../bot/telegram-io.js";
 
 const SOFT_LIMIT = 3500;
-const THINK_TAIL = 500;
+/** Keep only the latest thought tail — long reasoning dumps drown the chat. */
+const THINK_TAIL = 280;
+/** Max live thought lines shown (older lines collapsed). */
+const THINK_MAX_LINES = 6;
 
 type SegKind = "out" | "think" | "tool";
 interface Seg {
   kind: SegKind;
   text: string;
+  /** Stable toolCallId so we can replace ⏳ → ✅ in place instead of stacking. */
+  toolId?: string;
 }
 
 export class ResponseStreamer {
@@ -141,6 +146,31 @@ export class ResponseStreamer {
     this.schedule();
   }
 
+  /**
+   * Insert or replace a tool card by toolCallId. OpenCode ACP emits several
+   * updates for the same call (pending → in_progress → completed); without
+   * replace, Telegram freezes on ⏳ while the turn already finished with Done.
+   */
+  upsertTool(toolId: string, rawMarkdown: string): void {
+    if (!rawMarkdown) return;
+    if (!toolId) {
+      this.addTool(rawMarkdown);
+      return;
+    }
+    // Prefer updating the unsealed live view; fall back to any prior segment.
+    for (let i = this.segs.length - 1; i >= 0; i--) {
+      const s = this.segs[i]!;
+      if (s.kind === "tool" && s.toolId === toolId) {
+        s.text = rawMarkdown;
+        this.schedule();
+        return;
+      }
+    }
+    this.toolCalls += 1;
+    this.segs.push({ kind: "tool", text: rawMarkdown, toolId });
+    this.schedule();
+  }
+
   get hasOutput(): boolean {
     return this.liveId !== undefined || this.segs.some((s) => s.text.trim().length > 0);
   }
@@ -242,20 +272,45 @@ export class ResponseStreamer {
 }
 
 function renderSegs(segs: Seg[]): string {
-  return segs
-    .map((s) => {
-      if (s.kind === "out") return s.text.trim();
-      if (s.kind === "think") return quoteThought(s.text);
-      return s.text.trim();
-    })
-    .filter((x) => x.length > 0)
-    .join("\n\n");
+  const parts: string[] = [];
+  let lastKind: SegKind | undefined;
+  for (const s of segs) {
+    let block = "";
+    if (s.kind === "out") block = s.text.trim();
+    else if (s.kind === "think") block = quoteThought(s.text);
+    else block = s.text.trim();
+    if (!block) continue;
+    // Light divider between a tool card and following prose.
+    if (lastKind === "tool" && s.kind === "out") parts.push("\u2500\u2500\u2500");
+    parts.push(block);
+    lastKind = s.kind;
+  }
+  return parts.join("\n\n");
 }
 
 function quoteThought(text: string): string {
-  const t = text.trim();
+  const t = text.replace(/\s+/g, " ").trim();
   if (!t) return "";
-  const short = t.length > THINK_TAIL ? "…" + t.slice(-THINK_TAIL) : t;
-  const lines = short.split("\n");
-  return lines.map((l, i) => (i === 0 ? `> 💭 *thinking:* ${l}` : `> ${l}`)).join("\n");
+  // Prefer the latest reasoning — early planning chatter is rarely useful mid-stream.
+  let short = t.length > THINK_TAIL ? "\u2026" + t.slice(-THINK_TAIL) : t;
+  // Soft-wrap into a few short quote lines for readability.
+  const words = short.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    if ((cur + " " + w).trim().length > 72 && cur) {
+      lines.push(cur);
+      cur = w;
+      if (lines.length >= THINK_MAX_LINES) break;
+    } else {
+      cur = cur ? cur + " " + w : w;
+    }
+  }
+  if (cur && lines.length < THINK_MAX_LINES) lines.push(cur);
+  if (words.length > 0 && lines.length >= THINK_MAX_LINES) {
+    // Indicate more thought was elided.
+    const last = lines[lines.length - 1]!;
+    if (!last.endsWith("\u2026")) lines[lines.length - 1] = last.replace(/\s*$/, "") + "\u2026";
+  }
+  return lines.map((l, i) => (i === 0 ? `> \u{1F4AD} ${l}` : `> ${l}`)).join("\n");
 }

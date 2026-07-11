@@ -37,33 +37,17 @@ jobs:
         id: changelog
         run: |
           VERSION="${{ steps.ver.outputs.VERSION }}"
-          # Extract the section between "## [VERSION]" and the next "## [" or end
-          awk -v ver="## \[${VERSION}\]" '
-            $0 ~ "^"ver { found=1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md > release_notes.md
-          # If empty, use auto-generated notes
+          # Extract the section between "## [VERSION]" and the next "## [" or end.
+          # Use sed (not awk) to avoid regex issues with literal [ in the header.
+          sed -n "/^## \[${VERSION}\]/,/^## \[/{/^## \[${VERSION}\]/d; /^## \[/d; p}" CHANGELOG.md > release_notes.md
+          # If empty, use a simple fallback
           if [ ! -s release_notes.md ]; then
             echo "Release ${VERSION}" > release_notes.md
           fi
 
       - name: Append install footer
         run: |
-          cat >> release_notes.md <<'EOF'
-
-          ---
-
-          ## Install
-
-          ```bash
-          npm install -g @artickc/opencode-telegram-bot
-          opencode-tg setup    # configure .env + detect opencode CLI
-          opencode-tg install  # install as 24/7 background service
-          ```
-
-          Or see the [Install Guide](docs/INSTALL.md).
-          EOF
+          printf '\n---\n\n## Install\n\n```bash\nnpm install -g @artickc/opencode-telegram-bot\nopencode-tg setup    # configure .env + detect opencode CLI\nopencode-tg install  # install as 24/7 background service\n```\n\nOr see the [Install Guide](docs/INSTALL.md).\n' >> release_notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

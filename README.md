@@ -22,6 +22,45 @@ re-architected for OpenCode ACP and extended into a full multi-session client.
 
 ---
 
+## 📸 Screenshots
+
+<table>
+  <tr>
+    <td width="50%" align="center"><b>💬 Live streaming with tool calls</b></td>
+    <td width="50%" align="center"><b>🧭 Pinned status panel</b></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><a href="screenshots/1.png"><img src="screenshots/1.png" width="400" alt="Live streaming with tool calls"></a></td>
+    <td width="50%" align="center"><a href="screenshots/2.png"><img src="screenshots/2.png" width="400" alt="Pinned status panel"></a></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>🔍 Rich tool-call detail</b></td>
+    <td width="50%" align="center"><b>📋 Session cards & switching</b></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><a href="screenshots/3.png"><img src="screenshots/3.png" width="400" alt="Rich tool-call detail"></a></td>
+    <td width="50%" align="center"><a href="screenshots/4.png"><img src="screenshots/4.png" width="400" alt="Session cards and switching"></a></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>📈 Progress bar & diffs</b></td>
+    <td width="50%" align="center"><b>🧩 MCP control panel</b></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><a href="screenshots/5.png"><img src="screenshots/5.png" width="400" alt="Progress bar and diffs"></a></td>
+    <td width="50%" align="center"><a href="screenshots/6.png"><img src="screenshots/6.png" width="400" alt="MCP control panel"></a></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>⚙️ Inline menu</b></td>
+    <td width="50%" align="center"><b>🔐 Tool approvals</b></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><a href="screenshots/7.png"><img src="screenshots/7.png" width="400" alt="Inline menu"></a></td>
+    <td width="50%" align="center"><a href="screenshots/8.png"><img src="screenshots/8.png" width="400" alt="Tool approvals"></a></td>
+  </tr>
+</table>
+
+---
+
 ## ✨ Features
 
 | Capability | What it does |
